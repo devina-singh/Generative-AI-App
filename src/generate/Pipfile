@@ -1,0 +1,17 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+google-cloud-storage = "*"
+google-cloud-aiplatform = "*"
+jsonschema = "*"
+scikit-learn = "*"
+vertexai = "*"
+tensorflow ="*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.8"

@@ -1,0 +1,138 @@
+# Generative AI App: RSVP Radar
+Our email inboxes are inundated with information about events we may want to attend. It is almost impossible to stay on top of everything going on, especially when the event details are buried in the body of the emails. We’d like to use Generative AI to extract the structured event information from our inbox and present a cleaned list of events that we can review, and choose to add to our calendars.
+More specifically, our app will interface with users' email accounts, either directly or through email forwarding, to extract pertinent event information contained within the emails. This data will then populate a list within the web app, allowing users to easily review and manage upcoming events at a later time.
+
+# Model Training and Experimentation
+## Model Training Pipeline
+For our model training, we are fine tuning Google's text-bison language model.   
+Step 1: Put training examples in the correct format, a jsonl file, into a Google Bucket.  
+Step 2: Kick off a Google pipeline training job that specifies the base model, hyperparameters, and points to the training data bucket. This is done using the following command: model.tune_model(training_data, model_display_name, train_steps, tuning_job_location, tuned_model_location, tuning_evaluation_spec)  
+Step 3: Google VertexAI performs a fine tuning run with the provided model and data.
+
+## Experimentation
+We are experimenting with the following tuning parameters:
+
+### Model Training Steps
+### Learning Rate Multiplier
+We pass different parameter values into the fine-tuning job and track tuning and evaluation metrics. More specifically, we metrics we are tracking are as follows:
+
+### Model tuning metrics:
+/train_total_loss: Loss for the tuning dataset at a training step.  
+/train_fraction_of_correct_next_step_preds: The token accuracy at a training step. A single prediction consists of a sequence of tokens. This metric measures the accuracy of the predicted tokens when compared to the ground truth in the tuning dataset.  
+/train_num_predictions: Number of predicted tokens at a training step.
+
+### Model evaluation metrics:
+/eval_total_loss: Loss for the evaluation dataset at an evaluation step.  
+/eval_fraction_of_correct_next_step_preds: The token accuracy at an evaluation step. A single prediction consists of a sequence of tokens. This metric measures the accuracy of the predicted tokens when compared to the ground truth in the evaluation dataset.  
+/eval_num_predictions: Number of predicted tokens at an evaluation step.
+
+The Google API to fine tune text-bison does not output metrics during training. Thus, we cannot integrate metric tracking and visualization directly with Weights and Biases. However we are able visualize these metrics with Google Cloud's equivalent, Tensorboard. We may also be push the final metrics to W&B once training concludes but we need our GPUs to be approved to try this.
+
+## Experiment Visualization
+The Google API to fine tune text-bison does not output metrics during training. Thus, we cannot integrate metric tracking and visualization directly with Weights and Biases. However we are able visualize these metrics with Google Cloud's equivalent, Tensorboard. Our cli.py script contains code to create a Tensorboard and pass tuning metrics to it. 
+
+# Data Generation and Pipeline
+
+We using Vertex AI to generate positive and negative examples (emails without events in them). Since we are generating the training data, we also implemented additional validation to ensure the format of the returned examples is valid before uploading them to the GCS bucket.
+
+We have also implemented the command  
+
+python cli.py prepare  
+which will read raw generated examples from the Google Bucket, split them into train/test/validation sets in 75/15/15 percentages, convert to the proper format that the fine tuning job will expect (more below). Since we are using the LLM fine tuning feature of VertexAI, training examples are off the form  
+
+{  
+  "input_text": "Sample LLM input prompt",  
+  "output_text": "Desired response"  
+}  
+ 
+While our training job on Vertex AI does not require (or allow) the training examples to be in the form of TFData, we have implemented a function in our generate/cli.py to convert these traing examples to TFData anyway. Even though not immediately required for our training jobs, it serves as a proactive measure to ensure flexibility in our machine learning pipeline. We wanted to make sure we understand how this library works, should we need it in the future. The command will upload the transformed data to the GCS bucket under the folder TF_DATA/. This functionality can be run with the command below  
+  
+python cli.py tf_data  
+For more details on our functions, see the README.md file in the generate folder.
+
+# Containers
+
+Containers  
+src/generate  
+This container is used to generate, store, and view training examples. The source of the training data is synthetic data, generated by passing a variety of examples of the emails with different formats, dates, asks, etc. to the Vertex AI API, and asking it to produce new examples. This container generates and stores the examples in the GCP bucket.  
+  
+(1) src/generate/cli.py - Here we do the generation and storing of our training data. For now we are generating about 200 examples, but will generate more.  
+  
+(2) src/generate/Dockerfile - This dockerfile starts with python:3.8-slim-buster. This attaches volume to the docker container and also uses secrets (not to be stored on GitHub) to connect to GCS.  
+  
+For details on running the Dockerfile and cli.py, see the README in src/generate folder.  
+  
+src/data_versioning  
+This container is used to handle aspects of data versioning.  
+
+(1) src/data_versioning/cli.py  
+  
+(2) src/data_versioning/Dockerfile - This dockerfile starts with python:3.8-slim-buster. This attaches volume to the docker container and also uses secrets (not to be stored on GitHub) to connect to GCS.  
+  
+For details on running the Dockerfile and cli.py, see the README in src/data_versioning folder.  
+  
+
+# Setup and Running the App
+You can configure the generate container to connect to a bucket in your own Google Cloud account.
+
+# Make a copy of the sample enviroment file.
+cp .env.sample .env  
+Our production data is hosted in project 'mlops-399714' in us-east1 in a bucket named ac215-rsp-radar that has public read access. However to deploy and test in your own Google Cloud account, update the following parameters in the .env file: GOOGLE_CLOUD_PROJECT, GOOGLE_DEFAULT_REGION, GOOGLE_BUCKET_NAME. You will also need to copy in your IAM user credentials into secrets/data-service-account.json.  
+
+Docker Build & Run  
+# Build your docker image and give your image the name `generate`
+docker build -t generate .  
+# You should be able to run your docker image by using:
+docker run --rm -ti --mount type=bind,source="$(pwd)",target=/app generate  
+Using the generate CLI to generate and inspect training examples  
+The cli has 6 subcommands:  
+
+Setup  
+python cli.py setup  
+Checks that the bucket is created and has the necessary subdirectory, otherwise it creates it.  
+  
+Generate  
+python cli.py generate -n 10  
+This command calls the VertexAI API to generate n number of emails to be used as training data for the fine-tuned model and upload it to our Google Bucket. It used a few-shot prompt engineering technique to generate training examples of the correct format. Each generated training example looks like the following example:  
+  
+{  
+  "record": {  
+    "sender": "Sally Jones",  
+    "received_time": "2023-09-25 14:15",  
+    "subject": "Join us for a Holiday Party!",  
+    "body": "Hello everyone,  
+  
+I am excited to invite you to our annual holiday party, which will be held on December 15th at 7:00 PM at the Holiday Inn. This year's party will be bigger and better than ever, with live music, dancing, and a buffet dinner. There will also be a silent auction with some amazing prizes up for grabs.  
+  
+We hope to see you all there!  
+
+Best regards,  
+Sally Jones"  
+  },  
+  "label": [  
+    {  
+      "date": "December 15th 2023",  
+      "time": "7:00 PM",  
+      "subject": "Annual Holiday Party"  
+    }  
+  ]  
+}  
+We are generating both positive and negative examples (emails with events and without events, respectively), at a 1:2 ratio. After validating the right JSON format expected, each training example is stored into a cloud storage bucket under [GOOGLE_BUCKET_NAME]/[LABELED_DIR] as its own file [randomly-generate-uuid].json.  
+  
+The -n argument command determines how many traing examples are generated by the command (which defaults to n=1).  
+  
+List  
+python cli.py list   
+Lists all of the uuids of the traing examples in the storage bucket  
+
+Show  
+python cli.py show [-i uuid]   
+Shows one training example from the examples in the storage bucket based on the uuid passed into the -i argument. Defaults to showing a random example.  
+
+Prepare  
+python cli.py prepare  
+Splits the data into train (75%), test (15%), and evaluation (15%) folders and converts them into the right format (jsonl file) to be passed onto our model training.  
+  
+TF Data  
+python cli.py tf_data   
+While our training job on Vertex AI does not require (or allow) the training examples to be in the form of TFData, we have implemented a function in our generate/cli.py to convert these traing examples to TFData anyway. Even though not immediately required for our training jobs, it serves as a proactive measure to ensure flexibility in our machine learning pipeline. We wanted to make sure we understand how this library works, should we need it in the future. The command will upload the transformed data to the GCS bucket under the folder TF_DATA/.
